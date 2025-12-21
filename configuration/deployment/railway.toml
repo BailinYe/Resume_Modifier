@@ -1,0 +1,22 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+# Run database migrations and then start the app
+startCommand = "bash -c 'cd core && flask db upgrade && cd .. && python railway_start.py'"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[environments.production]
+[environments.production.variables]
+FLASK_ENV = "production"
+FLASK_DEBUG = "0"
+PORT = "5001"
+
+[environments.staging]
+[environments.staging.variables]
+FLASK_ENV = "development"
+FLASK_DEBUG = "1"
+PORT = "5001"

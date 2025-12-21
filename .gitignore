@@ -1,0 +1,44 @@
+# created by virtualenv automatically
+# Python
+*.pyc
+__pycache__/
+.env
+docker.env
+/venv
+
+# Virtual environments
+.venv/bin
+.venv/
+
+# PyCharm specific
+.idea/
+*.iml
+
+# Docker
+docker-compose.override.yml
+
+# MacOS specific
+.DS_Store
+
+# If you’re using Docker, you may ignore build artifacts
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Keep example file
+!.env.example
+
+# Database backups and exports (may contain sensitive data)
+*.sql
+backup_*.sql
+*_backup.sql
+*.dump
+*.bak
+
+# Sensitive configuration files
+credentials.json
+service-account.json
+*_credentials.json

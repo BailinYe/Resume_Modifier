@@ -1,0 +1,47 @@
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: configuration/deployment/Dockerfile
+    ports:
+      - "5001:5001"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@db:5432/resume_app
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - JWT_SECRET=${JWT_SECRET}
+      - FLASK_APP=core.app.server
+      - FLASK_ENV=development
+      - FLASK_DEBUG=1
+      - DB_HOST=db
+      - PYTHONPATH=/app/core
+      # Google Integration Environment Variables
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:5001/auth/google/callback}
+      - GOOGLE_DRIVE_ENABLED=${GOOGLE_DRIVE_ENABLED:-true}
+      - GOOGLE_DRIVE_AUTO_CONVERT_PDF=${GOOGLE_DRIVE_AUTO_CONVERT_PDF:-true}
+      - GOOGLE_DRIVE_AUTO_SHARE=${GOOGLE_DRIVE_AUTO_SHARE:-true}
+      - GOOGLE_DRIVE_FOLDER_PATTERN=${GOOGLE_DRIVE_FOLDER_PATTERN:-user_id}
+      - GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE=${GOOGLE_DRIVE_SERVICE_ACCOUNT_FILE}
+      - GOOGLE_DRIVE_SERVICE_ACCOUNT_INFO=${GOOGLE_DRIVE_SERVICE_ACCOUNT_INFO}
+      - GOOGLE_DRIVE_PARENT_FOLDER_ID=${GOOGLE_DRIVE_PARENT_FOLDER_ID}
+    depends_on:
+      - db
+    volumes:
+      - ../..:/app
+
+  db:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=resume_app
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data: 
