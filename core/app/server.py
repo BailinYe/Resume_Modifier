@@ -15,7 +15,7 @@ from app.services.duplicate_file_handler import DuplicateFileHandler
 from app.services.pdf_generator import PDFGenerator
 from app.utils.error_handler import ErrorHandler, ErrorCode
 from app.response_template.resume_schema import RESUME_TEMPLATE
-from app.models.temp import User, Resume, JobDescription, GoogleAuth, ResumeTemplate, GeneratedDocument, ResumeFile
+from app.models.temp import User, Resume, JobDescription, GoogleAuth, ResumeTemplate, GeneratedDocument, ResumeFile, BatchResumeModification
 from app.utils.feedback_validator import FeedbackValidator
 from app.utils.jwt_utils import generate_token, token_required
 from app.utils.profile_validator import ProfileValidator
@@ -23,6 +23,7 @@ from app.utils.file_validator import FileValidator
 from app.services.file_storage_service import FileStorageService
 from app.services.file_processing_service import FileProcessingService
 from app.services.thumbnail_service import ThumbnailService
+from app.services.batch_resume_modifier import BatchResumeModifier
 
 # Enhanced OAuth and Session Management
 from app.services.google_admin_auth_fixed import GoogleAdminAuthServiceFixed, create_oauth_temp_states_table, cleanup_expired_oauth_states
@@ -7265,5 +7266,700 @@ def revoke_admin_google_auth():
         }), 500
 
 
+# =============================================================================
+# BATCH RESUME MODIFICATION API ENDPOINTS
+# =============================================================================
 
+@api.route('/api/resume/batch-modify', methods=['POST'])
+@swag_from({
+    'tags': ['Resume Processing'],
+    'summary': 'Batch modify resumes for different job positions',
+    'description': '''
+        批量修改简历功能 - 根据指定的职位描述批量修改多份简历。
+        
+        此API端点允许用户选择多份简历，并根据特定职位描述对它们进行优化修改。
+        每份简历将被单独分析和优化以匹配目标职位要求。
+        
+        功能特点:
+        - 支持同时修改多份简历
+        - 根据职位描述智能优化简历内容
+        - 自动调整个人简介、工作经验、技能和项目描述
+        - 保留原始简历，生成修改后的版本
+        - 提供详细的修改摘要和匹配度评分
+    ''',
+    'security': [{'Bearer': []}],
+    'parameters': [
+        {
+            'name': 'body',
+            'in': 'body',
+            'required': True,
+            'schema': {
+                'type': 'object',
+                'required': ['resume_ids', 'job_description_id'],
+                'properties': {
+                    'resume_ids': {
+                        'type': 'array',
+                        'items': {'type': 'integer'},
+                        'description': '要修改的简历ID列表（serial_number）',
+                        'example': [1, 2, 3]
+                    },
+                    'job_description_id': {
+                        'type': 'integer',
+                        'description': '目标职位描述ID（serial_number）',
+                        'example': 1
+                    },
+                    'customization_options': {
+                        'type': 'object',
+                        'description': '可选的自定义修改选项',
+                        'properties': {
+                            'optimize_summary': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化个人简介'
+                            },
+                            'optimize_experience': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化工作经验'
+                            },
+                            'optimize_skills': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化技能列表'
+                            },
+                            'optimize_projects': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化项目经验'
+                            }
+                        }
+                    },
+                    'save_as_new': {
+                        'type': 'boolean',
+                        'default': True,
+                        'description': '是否将修改后的简历保存为新简历（true）或覆盖原简历（false）'
+                    }
+                }
+            }
+        }
+    ],
+    'responses': {
+        200: {
+            'description': '批量修改成功',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': True},
+                    'message': {'type': 'string'},
+                    'batch_id': {'type': 'integer', 'description': '批量修改记录ID'},
+                    'results': {
+                        'type': 'object',
+                        'properties': {
+                            'job_description_id': {'type': 'integer'},
+                            'job_description_title': {'type': 'string'},
+                            'total_resumes': {'type': 'integer'},
+                            'successful_modifications': {'type': 'integer'},
+                            'failed_modifications': {'type': 'integer'},
+                            'modified_resumes': {
+                                'type': 'array',
+                                'items': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'original_resume_id': {'type': 'integer'},
+                                        'original_title': {'type': 'string'},
+                                        'modified_title': {'type': 'string'},
+                                        'modified_content': {'type': 'object'},
+                                        'match_score': {'type': 'number'},
+                                        'modifications_summary': {'type': 'object'}
+                                    }
+                                }
+                            },
+                            'errors': {'type': 'array'}
+                        }
+                    }
+                }
+            }
+        },
+        400: {
+            'description': '请求参数错误',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        401: {
+            'description': '未授权 - 无效或缺失的token',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        404: {
+            'description': '简历或职位描述未找到',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        500: {
+            'description': '服务器错误',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'error': {'type': 'string'}
+                }
+            }
+        }
+    }
+})
+@token_required
+def batch_modify_resumes():
+    """
+    批量修改简历API端点
+    根据职位描述批量修改多份简历
+    """
+    try:
+        user_id = request.user.get('user_id')
+        data = request.get_json()
+        
+        # 验证必需参数
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Request body is required'
+            }), 400
+        
+        resume_ids = data.get('resume_ids', [])
+        job_description_id = data.get('job_description_id')
+        customization_options = data.get('customization_options', {})
+        save_as_new = data.get('save_as_new', True)
+        
+        # 验证参数
+        if not resume_ids or not isinstance(resume_ids, list):
+            return jsonify({
+                'success': False,
+                'error': 'resume_ids must be a non-empty array'
+            }), 400
+        
+        if not job_description_id:
+            return jsonify({
+                'success': False,
+                'error': 'job_description_id is required'
+            }), 400
+        
+        # 创建批量修改服务实例
+        modifier = BatchResumeModifier()
+        
+        # 执行批量修改
+        logging.info(f"Starting batch modification for user {user_id}, {len(resume_ids)} resumes")
+        
+        modification_results = modifier.batch_modify_resumes(
+            resume_ids=resume_ids,
+            job_description_id=job_description_id,
+            user_id=user_id,
+            customization_options=customization_options
+        )
+        
+        # 保存批量修改记录到数据库
+        batch_record = BatchResumeModification(
+            user_id=user_id,
+            job_description_id=job_description_id,
+            job_title=modification_results.get('job_description_title'),
+            total_resumes=modification_results.get('total_resumes'),
+            successful_modifications=modification_results.get('successful_modifications'),
+            failed_modifications=modification_results.get('failed_modifications'),
+            modification_results=modification_results.get('modified_resumes', []),
+            errors=modification_results.get('errors', []),
+            status='completed',
+            completed_at=datetime.utcnow()
+        )
+        
+        db.session.add(batch_record)
+        db.session.commit()
+        
+        # 如果需要保存修改后的简历
+        saved_resumes = []
+        if save_as_new:
+            for modified_resume in modification_results.get('modified_resumes', []):
+                try:
+                    save_result = modifier.save_modified_resume(
+                        user_id=user_id,
+                        modified_resume_data=modified_resume,
+                        save_as_new=True
+                    )
+                    saved_resumes.append({
+                        'original_id': modified_resume['original_resume_id'],
+                        'new_id': save_result['resume_id'],
+                        'title': modified_resume['modified_title']
+                    })
+                except Exception as e:
+                    logging.error(f"Failed to save modified resume: {str(e)}")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully modified {modification_results["successful_modifications"]} out of {modification_results["total_resumes"]} resumes',
+            'batch_id': batch_record.id,
+            'results': modification_results,
+            'saved_resumes': saved_resumes if save_as_new else None
+        }), 200
+        
+    except ValueError as ve:
+        logging.error(f"Validation error in batch modification: {str(ve)}")
+        return jsonify({
+            'success': False,
+            'error': str(ve)
+        }), 400
+        
+    except Exception as e:
+        db.session.rollback()
+        logging.error(f"Error in batch modification: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Batch modification failed: {str(e)}'
+        }), 500
+
+
+@api.route('/api/resume/batch-modify/<int:batch_id>', methods=['GET'])
+@swag_from({
+    'tags': ['Resume Processing'],
+    'summary': 'Get batch modification results',
+    'description': '获取指定批量修改操作的详细结果',
+    'security': [{'Bearer': []}],
+    'parameters': [
+        {
+            'name': 'batch_id',
+            'in': 'path',
+            'required': True,
+            'type': 'integer',
+            'description': '批量修改记录ID'
+        }
+    ],
+    'responses': {
+        200: {
+            'description': '成功获取批量修改结果',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean'},
+                    'batch_id': {'type': 'integer'},
+                    'user_id': {'type': 'integer'},
+                    'job_description_id': {'type': 'integer'},
+                    'job_title': {'type': 'string'},
+                    'status': {'type': 'string'},
+                    'total_resumes': {'type': 'integer'},
+                    'successful_modifications': {'type': 'integer'},
+                    'failed_modifications': {'type': 'integer'},
+                    'modified_resumes': {'type': 'array'},
+                    'errors': {'type': 'array'},
+                    'created_at': {'type': 'string'},
+                    'completed_at': {'type': 'string'}
+                }
+            }
+        },
+        404: {
+            'description': '批量修改记录未找到',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean'},
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        403: {
+            'description': '无权访问此批量修改记录',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean'},
+                    'error': {'type': 'string'}
+                }
+            }
+        }
+    }
+})
+@token_required
+def get_batch_modification_results(batch_id):
+    """
+    获取批量修改结果API端点
+    """
+    try:
+        user_id = request.user.get('user_id')
+        
+        # 查询批量修改记录
+        batch_record = BatchResumeModification.query.filter_by(
+            id=batch_id,
+            user_id=user_id
+        ).first()
+        
+        if not batch_record:
+            return jsonify({
+                'success': False,
+                'error': 'Batch modification record not found or access denied'
+            }), 404
+        
+        return jsonify({
+            'success': True,
+            'batch_id': batch_record.id,
+            'user_id': batch_record.user_id,
+            'job_description_id': batch_record.job_description_id,
+            'job_title': batch_record.job_title,
+            'status': batch_record.status,
+            'total_resumes': batch_record.total_resumes,
+            'successful_modifications': batch_record.successful_modifications,
+            'failed_modifications': batch_record.failed_modifications,
+            'modified_resumes': batch_record.modification_results,
+            'errors': batch_record.errors,
+            'created_at': batch_record.created_at.isoformat() if batch_record.created_at else None,
+            'completed_at': batch_record.completed_at.isoformat() if batch_record.completed_at else None
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error retrieving batch modification results: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@api.route('/api/resume/batch-modify/history', methods=['GET'])
+@swag_from({
+    'tags': ['Resume Processing'],
+    'summary': 'Get batch modification history',
+    'description': '获取用户的所有批量修改历史记录',
+    'security': [{'Bearer': []}],
+    'parameters': [
+        {
+            'name': 'limit',
+            'in': 'query',
+            'type': 'integer',
+            'default': 20,
+            'description': '返回记录数量限制'
+        },
+        {
+            'name': 'offset',
+            'in': 'query',
+            'type': 'integer',
+            'default': 0,
+            'description': '跳过的记录数量（用于分页）'
+        }
+    ],
+    'responses': {
+        200: {
+            'description': '成功获取批量修改历史',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean'},
+                    'total_count': {'type': 'integer'},
+                    'batch_modifications': {
+                        'type': 'array',
+                        'items': {
+                            'type': 'object',
+                            'properties': {
+                                'batch_id': {'type': 'integer'},
+                                'job_title': {'type': 'string'},
+                                'total_resumes': {'type': 'integer'},
+                                'successful_modifications': {'type': 'integer'},
+                                'status': {'type': 'string'},
+                                'created_at': {'type': 'string'}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+})
+@token_required
+def get_batch_modification_history():
+    """
+    获取批量修改历史API端点
+    """
+    try:
+        user_id = request.user.get('user_id')
+        limit = request.args.get('limit', 20, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        
+        # 查询用户的批量修改记录
+        total_count = BatchResumeModification.query.filter_by(user_id=user_id).count()
+        
+        batch_records = BatchResumeModification.query.filter_by(
+            user_id=user_id
+        ).order_by(
+            BatchResumeModification.created_at.desc()
+        ).limit(limit).offset(offset).all()
+        
+        results = []
+        for record in batch_records:
+            results.append({
+                'batch_id': record.id,
+                'job_description_id': record.job_description_id,
+                'job_title': record.job_title,
+                'total_resumes': record.total_resumes,
+                'successful_modifications': record.successful_modifications,
+                'failed_modifications': record.failed_modifications,
+                'status': record.status,
+                'created_at': record.created_at.isoformat() if record.created_at else None,
+                'completed_at': record.completed_at.isoformat() if record.completed_at else None
+            })
+        
+        return jsonify({
+            'success': True,
+            'total_count': total_count,
+            'limit': limit,
+            'offset': offset,
+            'batch_modifications': results
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error retrieving batch modification history: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@api.route('/api/resume/modify-for-jobs', methods=['POST'])
+@swag_from({
+    'tags': ['Resume Processing'],
+    'summary': 'Modify one resume for multiple job positions',
+    'description': '''
+        一份简历多岗位修改功能 - 根据多个职位描述修改一份简历，生成多个版本。
+        
+        此API端点允许用户选择一份简历，并根据多个不同的职位描述对其进行优化修改。
+        每个职位都会生成一个针对性优化的简历版本。
+        
+        功能特点:
+        - 选择一份基础简历
+        - 提供多个目标职位描述
+        - 自动生成针对每个职位优化的简历版本
+        - 每个版本独立保存
+        - 提供详细的修改摘要和匹配度评分
+    ''',
+    'security': [{'Bearer': []}],
+    'parameters': [
+        {
+            'name': 'body',
+            'in': 'body',
+            'required': True,
+            'schema': {
+                'type': 'object',
+                'required': ['resume_id', 'job_description_ids'],
+                'properties': {
+                    'resume_id': {
+                        'type': 'integer',
+                        'description': '要修改的简历ID（serial_number）',
+                        'example': 1
+                    },
+                    'job_description_ids': {
+                        'type': 'array',
+                        'items': {'type': 'integer'},
+                        'description': '目标职位描述ID列表（serial_number）',
+                        'example': [1, 2, 3]
+                    },
+                    'customization_options': {
+                        'type': 'object',
+                        'description': '可选的自定义修改选项',
+                        'properties': {
+                            'optimize_summary': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化个人简介'
+                            },
+                            'optimize_experience': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化工作经验'
+                            },
+                            'optimize_skills': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化技能列表'
+                            },
+                            'optimize_projects': {
+                                'type': 'boolean',
+                                'default': True,
+                                'description': '是否优化项目经验'
+                            }
+                        }
+                    },
+                    'save_versions': {
+                        'type': 'boolean',
+                        'default': True,
+                        'description': '是否自动保存生成的简历版本'
+                    }
+                }
+            }
+        }
+    ],
+    'responses': {
+        200: {
+            'description': '修改成功',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': True},
+                    'message': {'type': 'string'},
+                    'results': {
+                        'type': 'object',
+                        'properties': {
+                            'original_resume_id': {'type': 'integer'},
+                            'original_resume_title': {'type': 'string'},
+                            'total_job_positions': {'type': 'integer'},
+                            'successful_modifications': {'type': 'integer'},
+                            'failed_modifications': {'type': 'integer'},
+                            'modified_versions': {
+                                'type': 'array',
+                                'items': {
+                                    'type': 'object',
+                                    'properties': {
+                                        'job_description_id': {'type': 'integer'},
+                                        'job_title': {'type': 'string'},
+                                        'modified_title': {'type': 'string'},
+                                        'modified_content': {'type': 'object'},
+                                        'match_score': {'type': 'number'},
+                                        'modifications_summary': {'type': 'object'},
+                                        'saved_resume_id': {'type': 'integer', 'description': '如果保存了，返回新简历ID'}
+                                    }
+                                }
+                            },
+                            'errors': {'type': 'array'}
+                        }
+                    }
+                }
+            }
+        },
+        400: {
+            'description': '请求参数错误',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        401: {
+            'description': '未授权 - 无效或缺失的token',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        404: {
+            'description': '简历或职位描述未找到',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'error': {'type': 'string'}
+                }
+            }
+        },
+        500: {
+            'description': '服务器错误',
+            'schema': {
+                'type': 'object',
+                'properties': {
+                    'success': {'type': 'boolean', 'example': False},
+                    'error': {'type': 'string'}
+                }
+            }
+        }
+    }
+})
+@token_required
+def modify_resume_for_multiple_jobs():
+    """
+    一份简历多岗位修改API端点
+    根据多个职位描述修改一份简历，生成多个版本
+    """
+    try:
+        user_id = request.user.get('user_id')
+        data = request.get_json()
+        
+        # 验证必需参数
+        if not data:
+            return jsonify({
+                'success': False,
+                'error': 'Request body is required'
+            }), 400
+        
+        resume_id = data.get('resume_id')
+        job_description_ids = data.get('job_description_ids', [])
+        customization_options = data.get('customization_options', {})
+        save_versions = data.get('save_versions', True)
+        
+        # 验证参数
+        if not resume_id:
+            return jsonify({
+                'success': False,
+                'error': 'resume_id is required'
+            }), 400
+        
+        if not job_description_ids or not isinstance(job_description_ids, list):
+            return jsonify({
+                'success': False,
+                'error': 'job_description_ids must be a non-empty array'
+            }), 400
+        
+        # 创建批量修改服务实例
+        modifier = BatchResumeModifier()
+        
+        # 执行多岗位修改
+        logging.info(f"Starting multi-job modification for user {user_id}, resume {resume_id}, {len(job_description_ids)} job positions")
+        
+        modification_results = modifier.modify_resume_for_multiple_jobs(
+            resume_id=resume_id,
+            job_description_ids=job_description_ids,
+            user_id=user_id,
+            customization_options=customization_options
+        )
+        
+        # 如果需要保存修改后的简历版本
+        if save_versions:
+            for modified_version in modification_results.get('modified_versions', []):
+                try:
+                    save_result = modifier.save_modified_resume(
+                        user_id=user_id,
+                        modified_resume_data=modified_version,
+                        save_as_new=True
+                    )
+                    # 添加保存的简历ID到结果中
+                    modified_version['saved_resume_id'] = save_result['resume_id']
+                except Exception as e:
+                    logging.error(f"Failed to save modified resume for job {modified_version.get('job_description_id')}: {str(e)}")
+                    modified_version['save_error'] = str(e)
+        
+        return jsonify({
+            'success': True,
+            'message': f'Successfully generated {modification_results["successful_modifications"]} resume versions for {modification_results["total_job_positions"]} job positions',
+            'results': modification_results
+        }), 200
+        
+    except ValueError as ve:
+        logging.error(f"Validation error in multi-job modification: {str(ve)}")
+        return jsonify({
+            'success': False,
+            'error': str(ve)
+        }), 400
+        
+    except Exception as e:
+        logging.error(f"Error in multi-job modification: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Multi-job modification failed: {str(e)}'
+        }), 500
 

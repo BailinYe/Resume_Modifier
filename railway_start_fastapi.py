@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Railway deployment entry point for Resume Modifier
+Railway deployment entry point for Resume Modifier (FastAPI版本)
 Handles proper Python path setup for module imports
 """
 
@@ -18,30 +18,34 @@ sys.path.insert(0, current_dir)
 # Set environment variables
 os.environ.setdefault('PYTHONPATH', f"{core_dir}:{current_dir}")
 
-# Change working directory to core for Flask-Migrate to find migrations
-# 将工作目前切换到core目录，以便Flask-Migrate可以找到迁移文件
+# Change working directory to core for Alembic to find migrations
 os.chdir(core_dir)
 
 if __name__ == "__main__":
     try:
-        # Import and create the Flask application
-        from app import create_app
-        app = create_app()
+        # Import uvicorn and the FastAPI application
+        import uvicorn
+        from app.main import app
         
         # Get port from environment (Railway sets this automatically)
         port = int(os.environ.get('PORT', 5001))
         host = os.environ.get('HOST', '0.0.0.0')
+        workers = int(os.environ.get('WORKERS', 1))
         
-        print(f"🚀 Starting Resume Modifier on {host}:{port}")
+        print(f"🚀 Starting Resume Modifier (FastAPI) on {host}:{port}")
         print(f"📍 Python Path: {sys.path[0]}")
         print(f"🔧 Working Directory: {os.getcwd()}")
-        print(f"📦 Flask App: {app}")
+        print(f"📦 FastAPI App: {app}")
+        print(f"👷 Workers: {workers}")
         
-        # Start the application
-        app.run(
+        # Start the application with uvicorn
+        uvicorn.run(
+            app,
             host=host,
             port=port,
-            debug=os.environ.get('FLASK_DEBUG', '0') == '1'
+            workers=workers,
+            log_level="info",
+            access_log=True
         )
         
     except ImportError as e:

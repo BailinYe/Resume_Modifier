@@ -832,3 +832,47 @@ class PasswordResetToken(db.Model):
     
     def __repr__(self):
         return f'<PasswordResetToken {self.id} (User: {self.user_id}, Valid: {self.is_valid()})>'
+
+
+class BatchResumeModification(db.Model):
+    """
+    Model for storing batch resume modification records
+    批量简历修改记录模型
+    """
+    __tablename__ = 'batch_resume_modifications'
+    
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    job_description_id = db.Column(db.Integer, nullable=False)  # Reference to job description serial_number
+    job_title = db.Column(db.String(200), nullable=True)
+    
+    # Batch operation details
+    total_resumes = db.Column(db.Integer, nullable=False, default=0)
+    successful_modifications = db.Column(db.Integer, nullable=False, default=0)
+    failed_modifications = db.Column(db.Integer, nullable=False, default=0)
+    
+    # Results stored as JSON
+    modification_results = db.Column(db.JSON, nullable=False)  # Contains all modified resume data
+    errors = db.Column(db.JSON, nullable=True)  # Contains any errors that occurred
+    
+    # Status tracking
+    status = db.Column(db.String(50), default='pending')  # pending, in_progress, completed, failed
+    
+    # Timestamps
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    # Relationships
+    user = db.relationship('User', backref='batch_modifications', lazy=True)
+    
+    # Foreign key constraint for job description reference
+    __table_args__ = (
+        db.ForeignKeyConstraint(
+            ['user_id', 'job_description_id'], 
+            ['job_descriptions.user_id', 'job_descriptions.serial_number']
+        ),
+    )
+    
+    def __repr__(self):
+        return f'<BatchResumeModification {self.id} (User: {self.user_id}, Status: {self.status})>'

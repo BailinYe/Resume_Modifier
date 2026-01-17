@@ -56,6 +56,14 @@ def create_app(config=None):
         'contact': {
             'name': 'API Support',
             'email': 'support@resumeeditor.com'
+        },
+        'securityDefinitions': {
+            'Bearer': {
+                'type': 'apiKey',
+                'name': 'Authorization',
+                'in': 'header',
+                'description': 'JWT Authorization header using the Bearer scheme. Example: "Bearer {token}"'
+            }
         }
     }
     
